@@ -4,7 +4,7 @@
 
 import os
 import argparse
-
+import pathlib
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -101,7 +101,7 @@ def parse_args(input_args=None):
     )
     parser.add_argument(
         "--output_dir",
-        type=str,
+        type=pathlib.Path,
         default="sd-model-finetuned-lora",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
@@ -168,7 +168,7 @@ def parse_args(input_args=None):
     )
     parser.add_argument(
         "--resume_from_checkpoint",
-        type=str,
+        type=pathlib.Path,
         default=None,
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"

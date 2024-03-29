@@ -1,12 +1,8 @@
 # Adapted from HuggingFace diffusers scripts
 # https://github.com/huggingface/diffusers
 
-import logging
 import math
-import os
-import random
 import shutil
-from pathlib import Path
 
 import datasets
 import numpy as np
@@ -104,7 +100,7 @@ def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
 
 
 def main(args):
-    logging_dir = Path(args.output_dir, args.logging_dir)
+    logging_dir = pathlib.Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)

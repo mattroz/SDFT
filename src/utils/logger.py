@@ -5,6 +5,7 @@ import pathlib
 
 from accelerate.logging import MultiProcessAdapter
 
+
 def get_logger(name: str, log_level: str = None, path_to_log_file: pathlib.Path | None = None) -> logging.Logger:
     """
     Returns a `logging.Logger` for `name` that can handle multiprocessing.

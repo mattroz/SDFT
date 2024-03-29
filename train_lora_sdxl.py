@@ -36,13 +36,11 @@ from diffusers.utils import convert_state_dict_to_diffusers
 from src.utils.hf_helpers import unwrap_model
 from src.methods.lora.hooks import build_load_model_hook, build_save_model_hook
 from src.data.dataset import build_dataset, collate_fn, build_train_processing_fn
-from src.methods.lora.arguments import parse_args
+from src.methods.lora.arguments import parse_train_args
 from src.utils.logger import get_logger
 
-# Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-# check_min_version("0.28.0.dev0")
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_level="INFO", path_to_log_file="logs/train.log") 
 
 
 def import_model_class_from_model_name_or_path(
@@ -657,5 +655,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = parse_train_args()
     main(args)

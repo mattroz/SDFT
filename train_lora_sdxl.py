@@ -66,7 +66,6 @@ def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
 
     for i, text_encoder in enumerate(text_encoders):
         if tokenizers is not None:
-            tokenizer = tokenizers[i]
             text_input_ids = tokenizers[i](
                 prompt,
                 padding="max_length",

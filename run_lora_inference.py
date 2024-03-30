@@ -90,7 +90,6 @@ def main(args):
     # run inference
     generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
     for i in range(args.num_images_to_generate):
-        # TODO add negative prompt
         image = pipeline(
             num_inference_steps=args.num_inference_steps,
             guidance_scale=args.guidance_scale,             

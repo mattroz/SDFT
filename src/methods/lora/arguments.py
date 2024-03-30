@@ -335,16 +335,53 @@ def parse_inference_args(input_args=None):
         help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
     )
     parser.add_argument(
-        "--validation_prompt",
+        "--prompt",
         type=str,
         default=None,
-        help="A prompt that is used during validation to verify that the model is learning.",
+        help="The prompt to guide the image generation.",
     )
     parser.add_argument(
-        "--num_validation_images",
+        "--prompt_2",
+        type=str,
+        default=None,
+        help="The prompt to guide the image generation to be sent to `tokenizer_2` and `text_encoder_2`",
+    )
+    parser.add_argument(
+        "--negative_prompt",
+        type=str,
+        default=None,
+        help="The prompt not to guide the image generation.",
+    )
+    parser.add_argument(
+        "--negative_prompt_2",
+        type=str,
+        default=None,
+        help="The prompt not to guide the image generation to be sent to `tokenizer_2` and `text_encoder_2`.",
+    )
+    parser.add_argument(
+        "--num_inference_steps",
+        type=int,
+        default=35,
+        help=(
+            "The number of denoising steps. More denoising steps usually lead to"
+            " a higher quality image at the expense of slower inference.",
+        )
+    )
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=5.0,
+        help=(
+            "The guidance scale for the prompt during validation."
+            "Higher guidance scale encourages to generate images that are closely linked to the"
+            " text `prompt`, usually at the expense of lower image quality.",
+        )
+    )
+    parser.add_argument(
+        "--num_images_to_generate",
         type=int,
         default=4,
-        help="Number of images that should be generated during validation with `validation_prompt`.",
+        help="Number of images that should be generated with `prompt` and `negative_prompt`.",
     )
     parser.add_argument(
         "--output_dir",

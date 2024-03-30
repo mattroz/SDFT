@@ -22,9 +22,6 @@ from src.utils.logger import get_logger
 from src.methods.lora.arguments import parse_inference_args
 
 
-logger = get_logger(__name__, log_level="INFO", path_to_log_file="logs/inference.log") 
-
-
 def main(args):
     logging_dir = pathlib.Path(args.output_dir, args.logging_dir)
     path_to_save_images = pathlib.Path(args.output_dir, "inference_results")
@@ -106,4 +103,8 @@ def main(args):
 
 if __name__ == "__main__":
     args = parse_inference_args()
+    
+    path_to_log_file = pathlib.Path(args.output_dir, args.logging_dir, "inference.log")
+    logger = get_logger(__name__, log_level="INFO", path_to_log_file=path_to_log_file) 
+
     main(args)

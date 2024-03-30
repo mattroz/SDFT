@@ -89,14 +89,19 @@ def main(args):
     
     # run inference
     generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
-    for i in range(args.num_validation_images):
+    for i in range(args.num_images_to_generate):
         # TODO add negative prompt
-        image = pipeline(args.validation_prompt, 
-                         num_inference_steps=35,
-                         guidance_scale=5.0,
-                         generator=generator).images[0]
+        image = pipeline(
+            num_inference_steps=args.num_inference_steps,
+            guidance_scale=args.guidance_scale,             
+            prompt=args.prompt,
+            prompt_2=args.prompt_2,
+            negative_prompt=args.negative_prompt,
+            negative_prompt_2=args.negative_prompt_2,
+            generator=generator
+        ).images[0]
         path_to_save_image = pathlib.Path(path_to_save_images, 
-                                          "_".join(args.validation_prompt.lower().replace(",","").replace(".", "").split(" "))+f"_{i}.png")
+                                          "_".join(args.prompt.lower().replace(",","").replace(".", "").split(" "))+f"_{i}.png")
         image = np.asarray(image)
         cv2.imwrite(str(path_to_save_image), image)
         

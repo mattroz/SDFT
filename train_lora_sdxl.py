@@ -38,10 +38,7 @@ from src.methods.lora.hooks import build_load_model_hook, build_save_model_hook
 from src.data.dataset import build_dataset, collate_fn, build_train_processing_fn
 from src.methods.lora.arguments import parse_train_args
 from src.utils.logger import get_logger
-
-
-logger = get_logger(__name__, log_level="INFO", path_to_log_file="logs/train.log") 
-
+ 
 
 def import_model_class_from_model_name_or_path(
     pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
@@ -110,6 +107,11 @@ def main(args):
         kwargs_handlers=[kwargs],
     )
 
+    # Handle the repository creation
+    if accelerator.is_main_process:
+        if args.output_dir is not None:
+            pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
     unwrap_model_ = partial(unwrap_model, accelerator)
 
     logger.info(accelerator.state, main_process_only=False)
@@ -125,11 +127,6 @@ def main(args):
     # If passed along, set the training seed now.
     if args.seed is not None:
         set_seed(args.seed)
-
-    # Handle the repository creation
-    if accelerator.is_main_process:
-        if args.output_dir is not None:
-            pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     # Load the tokenizers
     tokenizer_one = AutoTokenizer.from_pretrained(
@@ -345,7 +342,7 @@ def main(args):
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         vars_to_log_in_trackers = {k: str(v) if isinstance(v, (pathlib.Path)) else v for k, v in vars(args).items()}
-        accelerator.init_trackers("text2image-fine-tune", config=vars_to_log_in_trackers)
+        accelerator.init_trackers("text2image-lora-fine-tune", config=vars_to_log_in_trackers)
 
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
@@ -656,4 +653,9 @@ def main(args):
 
 if __name__ == "__main__":
     args = parse_train_args()
+    
+    path_to_log_file = pathlib.Path(args.output_dir, args.logging_dir, "train.log")
+    path_to_log_file.parent.mkdir(parents=True, exist_ok=True)
+    logger = get_logger(__name__, log_level="INFO", path_to_log_file=path_to_log_file)
+
     main(args)

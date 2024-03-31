@@ -64,6 +64,8 @@ def import_model_class_from_model_name_or_path(
 def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
     prompt_embeds_list = []
 
+    # text_encoders = [CLIPTextModel, CLIPTextModelWithProjection]
+    # In paper: CLIP ViT-L & OpenCLIP ViT-bigG
     for i, text_encoder in enumerate(text_encoders):
         if tokenizers is not None:
             text_input_ids = tokenizers[i](
@@ -81,15 +83,19 @@ def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
             text_input_ids.to(text_encoder.device), output_hidden_states=True, return_dict=False
         )
 
-        # We are only ALWAYS interested in the pooled output of the final text encoder
-        pooled_prompt_embeds = prompt_embeds[0]
-        prompt_embeds = prompt_embeds[-1][-2]
+        # We are only ALWAYS interested in the pooled output of the final text encoder,
+        # i.e. take features from the EOS token. Example is here:
+        # https://github.com/mattroz/miniCLIP/blob/main/src/model/clip.py#L58
+
+        # Paper uses pooled embeddings from OpenCLIP ViT-bigG model (Table 1 in the paper)
+        pooled_prompt_embeds = prompt_embeds[0]  # overwrites by the second text_encoder, which pooled outputs has [bs, 1280] size (SDXL paper, Table 1)
+        prompt_embeds = prompt_embeds[-1][-2]   # CLIPTextModel: [bs, 77, 768] | CLIPTextModelWithProjection: [bs, 77, 1280]
         bs_embed, seq_len, _ = prompt_embeds.shape
         prompt_embeds = prompt_embeds.view(bs_embed, seq_len, -1)
         prompt_embeds_list.append(prompt_embeds)
 
-    prompt_embeds = torch.concat(prompt_embeds_list, dim=-1)
-    pooled_prompt_embeds = pooled_prompt_embeds.view(bs_embed, -1)
+    prompt_embeds = torch.concat(prompt_embeds_list, dim=-1) # [bs, 77, 2048]
+    pooled_prompt_embeds = pooled_prompt_embeds.view(bs_embed, -1) # [bs, 1280]
     return prompt_embeds, pooled_prompt_embeds
 
 
@@ -142,9 +148,11 @@ def main(args):
     )
 
     # import correct text encoder classes
+    # CLIPTextModel
     text_encoder_cls_one = import_model_class_from_model_name_or_path(
         args.pretrained_model_name_or_path, args.revision
     )
+    # CLIPTextModelWithProjection
     text_encoder_cls_two = import_model_class_from_model_name_or_path(
         args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
     )
@@ -163,6 +171,7 @@ def main(args):
         revision=args.revision, 
         variant=args.variant
     )
+
     vae_path = (
         args.pretrained_model_name_or_path
         if args.pretrained_vae_model_name_or_path is None

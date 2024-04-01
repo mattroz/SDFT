@@ -5,6 +5,7 @@ import math
 import shutil
 
 import datasets
+import json
 import numpy as np
 import torch
 import pathlib
@@ -33,12 +34,19 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils import convert_state_dict_to_diffusers
  
-from src.utils.hf_helpers import unwrap_model
+from src.utils.hf_helpers import unwrap_model, get_trainable_parameters_str
 from src.methods.lora.hooks import build_load_model_hook, build_save_model_hook
 from src.data.dataset import build_dataset, collate_fn, build_train_processing_fn
 from src.methods.lora.arguments import parse_train_args
 from src.utils.logger import get_logger
- 
+
+
+def get_checkpoints_directories(output_dir):
+    dirs = list(file.name for file in output_dir.iterdir() if file.is_dir())
+    dirs = [d for d in dirs if str(d).startswith("checkpoint")]
+    dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
+    return dirs
+
 
 def import_model_class_from_model_name_or_path(
     pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
@@ -133,6 +141,14 @@ def main(args):
     if args.seed is not None:
         set_seed(args.seed)
 
+    # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
+    # as these weights are only used for inference, keeping weights in full precision is not required.
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+
     # Load the tokenizers
     tokenizer_one = AutoTokenizer.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -148,11 +164,11 @@ def main(args):
     )
 
     # import correct text encoder classes
-    # CLIPTextModel
+    # CLIPTextModel (CLIP ViT-L in the paper)
     text_encoder_cls_one = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision
+        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder"
     )
-    # CLIPTextModelWithProjection
+    # CLIPTextModelWithProjection (OpenCLIP ViT-bigG in the paper)
     text_encoder_cls_two = import_model_class_from_model_name_or_path(
         args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
     )
@@ -171,7 +187,6 @@ def main(args):
         revision=args.revision, 
         variant=args.variant
     )
-
     vae_path = (
         args.pretrained_model_name_or_path
         if args.pretrained_vae_model_name_or_path is None
@@ -187,19 +202,29 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
     )
 
+    # Gather all models' configs to log them
+    if accelerator.is_main_process:
+        path_to_save_configs = pathlib.Path(logging_dir, "model_configs")
+        path_to_save_configs.mkdir(parents=True, exist_ok=True)        
+        models_to_log = {
+            "noise_scheduler": noise_scheduler,
+            "text_encoder_one": text_encoder_one,
+            "text_encoder_two": text_encoder_two,
+            "vae": vae,
+            "unet": unet,
+        }
+        for model_name in models_to_log:
+            path_to_save_config = pathlib.Path(path_to_save_configs, f"{model_name}.json")
+            config = models_to_log[model_name].config
+            config = config.to_dict() if isinstance(config, PretrainedConfig) else config
+            with open(path_to_save_config, "w") as f:
+                json.dump(config, f, indent=4)
+
     # We only train the additional adapter LoRA layers
-    vae.requires_grad_(False)
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
+    vae.requires_grad_(False)
     unet.requires_grad_(False)
-
-    # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
-    # as these weights are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
 
     # Move unet, vae and text_encoder to device and cast to weight_dtype
     # The VAE is in float32 to avoid NaN losses.
@@ -223,6 +248,7 @@ def main(args):
     )
 
     unet.add_adapter(unet_lora_config)
+    logger.info(f"{type(unet).__name__} LoRA: {get_trainable_parameters_str(unet)}", main_process_only=True)
 
     # The text encoder comes from 🤗 transformers, we will also attach adapters to it.
     if args.train_text_encoder:
@@ -235,6 +261,9 @@ def main(args):
         )
         text_encoder_one.add_adapter(text_lora_config)
         text_encoder_two.add_adapter(text_lora_config)
+
+        logger.info(f"{type(text_encoder_one).__name__} LoRA: {get_trainable_parameters_str(text_encoder_one)}", main_process_only=True)
+        logger.info(f"{type(text_encoder_two).__name__} LoRA: {get_trainable_parameters_str(text_encoder_two)}", main_process_only=True)
 
     save_model_hook = build_save_model_hook(accelerator, unet, text_encoder_one, text_encoder_two)
     load_model_hook = build_load_model_hook(accelerator, args, logger, unet, text_encoder_one, text_encoder_two)
@@ -286,6 +315,7 @@ def main(args):
             + list(filter(lambda p: p.requires_grad, text_encoder_one.parameters()))
             + list(filter(lambda p: p.requires_grad, text_encoder_two.parameters()))
         )
+
     optimizer = optimizer_class(
         params_to_optimize,
         lr=args.learning_rate,
@@ -370,10 +400,8 @@ def main(args):
             path = args.resume_from_checkpoint.name
         else:
             # Get the most recent checkpoint
-            dirs = list(file.name for file in args.output_dir.iterdir() if file.is_dir())
-            dirs = [d for d in dirs if str(d).startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
+            checkpoint_dirs = get_checkpoints_directories(args.output_dir)
+            path = checkpoint_dirs[-1] if len(checkpoint_dirs) > 0 else None
 
         if path is None:
             accelerator.print(
@@ -405,6 +433,7 @@ def main(args):
         if args.train_text_encoder:
             text_encoder_one.train()
             text_encoder_two.train()
+        
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
@@ -427,10 +456,10 @@ def main(args):
                         (model_input.shape[0], model_input.shape[1], 1, 1), device=model_input.device
                     )
 
-                bsz = model_input.shape[0]
+                batch_size = model_input.shape[0]
                 # Sample a random timestep for each image
                 timesteps = torch.randint(
-                    0, noise_scheduler.config.num_train_timesteps, (bsz,), device=model_input.device
+                    0, noise_scheduler.config.num_train_timesteps, (batch_size,), device=model_input.device
                 )
                 timesteps = timesteps.long()
 
@@ -438,7 +467,7 @@ def main(args):
                 # (this is the forward diffusion process)
                 noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
 
-                # time ids
+                # Micro-Conditioning, sec. 2.2 in the paper (Fig. 3 and Fig. 4 in the paper). 
                 def compute_time_ids(original_size, crops_coords_top_left):
                     # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
                     target_size = (args.resolution, args.resolution)
@@ -447,19 +476,26 @@ def main(args):
                     add_time_ids = add_time_ids.to(accelerator.device, dtype=weight_dtype)
                     return add_time_ids
 
-                add_time_ids = torch.cat(
-                    [compute_time_ids(s, c) for s, c in zip(batch["original_sizes"], batch["crop_top_lefts"])]
-                )
+                add_time_ids = torch.cat([
+                    compute_time_ids(original_size, crop_top_size) 
+                    for original_size, crop_top_size in zip(batch["original_sizes"], batch["crop_top_lefts"])
+                ])
 
-                # Predict the noise residual
-                unet_added_conditions = {"time_ids": add_time_ids}
+                # Fuse text embeddings from two text encoders:
+                # 1. prompt_embeds are concatenated embeddings from both CLIP text encoders; 
+                # 2. pooled_prompt_embeds are pooled text embedding from the OpenCLIP model; 
+                # NOTE: pooled_prompt_embeds are also going into the Refiner UNet, if such model is set (here we're fine-tuning base model only)
+                # (see https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0#%F0%9F%A7%A8-diffusers)
                 prompt_embeds, pooled_prompt_embeds = encode_prompt(
                     text_encoders=[text_encoder_one, text_encoder_two],
                     tokenizers=None,
                     prompt=None,
                     text_input_ids_list=[batch["input_ids_one"], batch["input_ids_two"]],
                 )
-                unet_added_conditions.update({"text_embeds": pooled_prompt_embeds})
+                unet_added_conditions = {"time_ids": add_time_ids, 
+                                         "text_embeds": pooled_prompt_embeds}
+                
+                # Predict the noise residual
                 model_pred = unet(
                     noisy_model_input,
                     timesteps,
@@ -498,9 +534,11 @@ def main(args):
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
                     loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
                     loss = loss.mean()
+                
                 if args.debug_loss and "filenames" in batch:
                     for fname in batch["filenames"]:
                         accelerator.log({"loss_for_" + fname: loss}, step=global_step)
+                
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean()
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
@@ -524,17 +562,15 @@ def main(args):
                     if global_step % args.checkpointing_steps == 0:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
-                            checkpoints = list(file.name for file in args.output_dir.iterdir() if file.is_dir())
-                            checkpoints = [d for d in checkpoints if str(d).startswith("checkpoint")]
-                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                            checkpoint_dirs = get_checkpoints_directories(args.output_dir)
 
                             # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                            if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = len(checkpoints) - args.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoints[0:num_to_remove]
+                            if len(checkpoint_dirs) >= args.checkpoints_total_limit:
+                                num_to_remove = len(checkpoint_dirs) - args.checkpoints_total_limit + 1
+                                removing_checkpoints = checkpoint_dirs[0:num_to_remove]
 
                                 logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                    f"{len(checkpoint_dirs)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
                                 )
                                 logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
@@ -582,7 +618,8 @@ def main(args):
                         pipeline(**pipeline_args, generator=generator).images[0]
                         for _ in range(args.num_validation_images)
                     ]
-
+                
+                # TODO add custom tracker to save images on disk if needed
                 for tracker in accelerator.trackers:
                     if tracker.name == "tensorboard":
                         np_images = np.stack([np.asarray(img) for img in images])
@@ -627,6 +664,7 @@ def main(args):
         # Make sure vae.dtype is consistent with the unet.dtype
         if args.mixed_precision == "fp16":
             vae.to(weight_dtype)
+            
         # Load previous pipeline
         pipeline = StableDiffusionXLPipeline.from_pretrained(
             args.pretrained_model_name_or_path,

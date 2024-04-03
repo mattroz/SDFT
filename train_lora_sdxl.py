@@ -603,7 +603,7 @@ def main(args):
                     if tracker.name == "tensorboard":
                         np_images = np.stack([np.asarray(img) for img in images])
                         tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-                    elif tracker.name == "file_system_tracker":
+                    elif tracker.name == "file_system_tracker" and args.save_images_on_disk:
                         tracker.save_images(images, epoch)
                     else:    
                         raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
@@ -673,7 +673,7 @@ def main(args):
                 if tracker.name == "tensorboard":
                     np_images = np.stack([np.asarray(img) for img in images])
                     tracker.writer.add_images("test", np_images, epoch, dataformats="NHWC")
-                elif tracker.name == "file_system_tracker":
+                elif tracker.name == "file_system_tracker" and args.save_images_on_disk:
                         tracker.save_images(images, epoch)
                 else:    
                     raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")

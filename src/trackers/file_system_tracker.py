@@ -1,16 +1,23 @@
 import os
 import json
 
-from typing import Optional
+from typing import Union, Optional
 from accelerate.tracking import GeneralTracker, on_main_process
 
 
 class FileSystemTracker(GeneralTracker):
+    """Tracker that logs scalars to a scalars.json file on the file system.
+    """
     name = "file_system_tracker"
     requires_logging_directory = True
 
     @on_main_process
-    def __init__(self, logging_dir: Optional[str | os.PathLike] = None):
+    def __init__(self, logging_dir: Union[str | os.PathLike]):
+        """Initializes the FileSystemTracker.
+
+        Args:
+            logging_dir (Union[str | os.PathLike]): The directory where the scalars.json file will be stored.
+        """
         self.path_to_log_file = os.path.join(logging_dir, "scalars.json")
         self.config = None
         self.run = []

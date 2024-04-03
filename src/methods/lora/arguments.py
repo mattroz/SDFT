@@ -83,6 +83,11 @@ def parse_train_args(input_args=None):
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
+        "--save_images_on_disk",
+        action="store_true",
+        help="Whether to save the images generated during validation on disk.",
+    )
+    parser.add_argument(
         "--validation_epochs",
         type=int,
         default=1,

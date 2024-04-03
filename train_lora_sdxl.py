@@ -37,7 +37,7 @@ from diffusers.utils import convert_state_dict_to_diffusers
 from src.utils.hf_helpers import unwrap_model, get_trainable_parameters_str
 from src.trackers import FileSystemTracker
 from src.methods.lora.hooks import build_load_model_hook, build_save_model_hook
-from src.data.dataset import build_dataset, collate_fn, build_train_processing_fn
+from src.data.dataset import ImageCaptionDataset, collate_fn
 from src.methods.lora.arguments import parse_train_args
 from src.utils.logger import get_logger
 
@@ -300,17 +300,19 @@ def main(args):
         eps=args.adam_epsilon,
     )
 
-    dataset = build_dataset(args)
-    preprocessing_fn_train = build_train_processing_fn(args, 
-                                                       dataset, 
-                                                       tokenizers=[tokenizer_one, tokenizer_two],
-                                                       dataset_columns=None)
-
-    with accelerator.main_process_first():
-        if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocessing_fn_train, output_all_columns=True)
+    train_dataset = ImageCaptionDataset(
+        tokenizer_one=tokenizer_one,
+        tokenizer_two=tokenizer_two,
+        train_data_dir=args.train_data_dir,
+        caption_column=args.caption_column,
+        resolution=args.resolution,
+        use_center_crop=args.center_crop,
+        use_random_flip=args.random_flip,
+        max_train_samples=args.max_train_samples,
+        seed=args.seed,
+        debug=args.debug_loss,
+        shuffle=True,
+    )
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -573,6 +575,7 @@ def main(args):
                 # create pipeline
                 pipeline = StableDiffusionXLPipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
+                    scheduler=noise_scheduler,
                     vae=vae,
                     text_encoder=unwrap_model_(text_encoder_one),
                     text_encoder_2=unwrap_model_(text_encoder_two),
@@ -600,8 +603,10 @@ def main(args):
                     if tracker.name == "tensorboard":
                         np_images = np.stack([np.asarray(img) for img in images])
                         tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-                    else:
-                        raise NotImplementedError("Only tensorboard is supported for validation logging.")
+                    elif tracker.name == "file_system_tracker":
+                        tracker.save_images(images, epoch)
+                    else:    
+                        raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
 
                 del pipeline
                 torch.cuda.empty_cache()
@@ -645,6 +650,7 @@ def main(args):
         pipeline = StableDiffusionXLPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
             vae=vae,
+            scheduler=noise_scheduler,
             revision=args.revision,
             variant=args.variant,
             torch_dtype=weight_dtype,
@@ -667,8 +673,11 @@ def main(args):
                 if tracker.name == "tensorboard":
                     np_images = np.stack([np.asarray(img) for img in images])
                     tracker.writer.add_images("test", np_images, epoch, dataformats="NHWC")
-                else:
-                    raise NotImplementedError("Only tensorboard is supported for validation logging.")
+                elif tracker.name == "file_system_tracker":
+                        tracker.save_images(images, epoch)
+                else:    
+                    raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
+
                 
     accelerator.end_training()
 

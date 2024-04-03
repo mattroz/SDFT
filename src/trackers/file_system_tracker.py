@@ -1,5 +1,9 @@
 import os
+import cv2
 import json
+import pathlib
+
+import numpy as np
 
 from typing import Union, Optional
 from accelerate.tracking import GeneralTracker, on_main_process
@@ -18,7 +22,10 @@ class FileSystemTracker(GeneralTracker):
         Args:
             logging_dir (Union[str | os.PathLike]): The directory where the scalars.json file will be stored.
         """
-        self.path_to_log_file = os.path.join(logging_dir, "scalars.json")
+        self.logging_dir = logging_dir
+        self.path_to_log_file = pathlib.Path(self.logging_dir, "scalars.json")
+        self.path_to_save_images = pathlib.Path(self.logging_dir, "images")
+        self.path_to_save_images.mkdir(exist_ok=True, parents=True)
         self.config = None
         self.run = []
 
@@ -42,3 +49,11 @@ class FileSystemTracker(GeneralTracker):
         with open(self.path_to_log_file, "a") as f:
             json.dump(entry, f)
             f.write("\n")
+
+    @on_main_process
+    def save_images(self, images: list[np.ndarray], epoch: int):
+        path_to_save_epoch_images = pathlib.Path(self.path_to_save_images, f"epoch_{epoch}")
+        path_to_save_epoch_images.mkdir(exist_ok=True, parents=True)
+
+        for i, image in enumerate(images):
+            cv2.imwrite(str(pathlib.Path(path_to_save_epoch_images, f"{epoch}_{i}.png")), np.asarray(image))

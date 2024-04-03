@@ -21,7 +21,7 @@ from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
 
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer, PretrainedConfig
+from transformers import AutoTokenizer, PretrainedConfig, CLIPTextModel, CLIPTextModelWithProjection
 
 import diffusers
 from diffusers import (
@@ -35,6 +35,7 @@ from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils import convert_state_dict_to_diffusers
  
 from src.utils.hf_helpers import unwrap_model, get_trainable_parameters_str
+from src.trackers import FileSystemTracker
 from src.methods.lora.hooks import build_load_model_hook, build_save_model_hook
 from src.data.dataset import build_dataset, collate_fn, build_train_processing_fn
 from src.methods.lora.arguments import parse_train_args
@@ -47,26 +48,6 @@ def get_checkpoints_directories(output_dir):
     dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
     return dirs
 
-
-def import_model_class_from_model_name_or_path(
-    pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
-):
-    text_encoder_config = PretrainedConfig.from_pretrained(
-        pretrained_model_name_or_path, subfolder=subfolder, revision=revision
-    )
-    model_class = text_encoder_config.architectures[0]
-
-    if model_class == "CLIPTextModel":
-        from transformers import CLIPTextModel
-
-        return CLIPTextModel
-    elif model_class == "CLIPTextModelWithProjection":
-        from transformers import CLIPTextModelWithProjection
-
-        return CLIPTextModelWithProjection
-    else:
-        raise ValueError(f"{model_class} is not supported.")
-    
 
 # Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
 def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
@@ -110,12 +91,14 @@ def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
 def main(args):
     logging_dir = pathlib.Path(args.output_dir, args.logging_dir)
 
+    filesystem_tracker = FileSystemTracker(logging_dir=logging_dir)
+
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
-        log_with=args.report_to,
+        log_with=[args.report_to, filesystem_tracker],
         project_config=accelerator_project_config,
         kwargs_handlers=[kwargs],
     )
@@ -163,25 +146,17 @@ def main(args):
         use_fast=False,
     )
 
-    # import correct text encoder classes
-    # CLIPTextModel (CLIP ViT-L in the paper)
-    text_encoder_cls_one = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder"
-    )
-    # CLIPTextModelWithProjection (OpenCLIP ViT-bigG in the paper)
-    text_encoder_cls_two = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
-    )
-
     # Load scheduler and models
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-    text_encoder_one = text_encoder_cls_one.from_pretrained(
+    # CLIP ViT-L in the paper
+    text_encoder_one = CLIPTextModel.from_pretrained(
         args.pretrained_model_name_or_path, 
         subfolder="text_encoder", 
         revision=args.revision, 
         variant=args.variant
     )
-    text_encoder_two = text_encoder_cls_two.from_pretrained(
+    # OpenCLIP ViT-bigG in the paper
+    text_encoder_two = CLIPTextModelWithProjection.from_pretrained(
         args.pretrained_model_name_or_path, 
         subfolder="text_encoder_2", 
         revision=args.revision, 
@@ -265,6 +240,7 @@ def main(args):
         logger.info(f"{type(text_encoder_one).__name__} LoRA: {get_trainable_parameters_str(text_encoder_one)}", main_process_only=True)
         logger.info(f"{type(text_encoder_two).__name__} LoRA: {get_trainable_parameters_str(text_encoder_two)}", main_process_only=True)
 
+    # TODO refactor hooks (ugly arguments passing)
     save_model_hook = build_save_model_hook(accelerator, unet, text_encoder_one, text_encoder_two)
     load_model_hook = build_load_model_hook(accelerator, args, logger, unet, text_encoder_one, text_encoder_two)
 
@@ -391,6 +367,7 @@ def main(args):
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
+    
     global_step = 0
     first_epoch = 0
 
@@ -416,7 +393,6 @@ def main(args):
 
             initial_global_step = global_step
             first_epoch = global_step // num_update_steps_per_epoch
-
     else:
         initial_global_step = 0
 

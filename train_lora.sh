@@ -1,0 +1,27 @@
+accelerate launch train_lora_sdxl.py \
+  --pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0 \
+  --pretrained_vae_model_name_or_path=madebyollin/sdxl-vae-fp16-fix \
+  --allow_tf32 \
+  --mixed_precision="fp16" \
+  --rank=32 \
+  --train_data_dir=datasets/dark_fantasy/ \
+  --caption_column="text" \
+  --dataloader_num_workers=16 \
+  --resolution=1024 \
+  --use_center_crop \
+  --use_random_flip \
+  --train_batch_size=2 \
+  --gradient_accumulation_steps=4 --gradient_checkpointing \
+  --max_train_steps=1500 \
+  --learning_rate=1e-04 \
+  --max_grad_norm=5 \
+  --lr_scheduler="cosine_with_restarts" \
+  --lr_warmup_steps=100 \
+  --output_dir=runs/lora_run/ \
+  --checkpointing_steps=100 \
+  --validation_epochs=10 \
+  --num_validation_images=4 \
+  --save_images_on_disk \
+  --validation_prompt="A picture of a misterious figure in cape, back view." \
+  --logging_dir="logs" \
+  --seed=1337

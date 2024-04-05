@@ -128,7 +128,7 @@ def parse_train_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--center_crop",
+        "--use_center_crop",
         default=False,
         action="store_true",
         help=(
@@ -137,7 +137,7 @@ def parse_train_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--random_flip",
+        "--use_random_flip",
         action="store_true",
         help="whether to randomly flip images horizontally",
     )
@@ -397,7 +397,8 @@ def parse_inference_args(input_args=None):
     parser.add_argument(
         "--lora_checkpoint_path",
         type=pathlib.Path,
-        required=True,
+        required=False,
+        default=None,
         help="Path to the LoRA checkpoint.",
     )
     parser.add_argument(

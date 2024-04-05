@@ -5,9 +5,9 @@ SDFT is a self-educational project, aimed to overview main Stable Diffusion fine
 Stable Diffusion implementation is taken from HuggingFace diffusers library.
 
 Techniques to overview:
-[ ] [Low-Rank Adaptation](https://arxiv.org/abs/2106.09685)
-[ ] [Textual Inversion](https://textual-inversion.github.io/)
-[ ] [DreamBooth](https://dreambooth.github.io/)
+- [ ] [Low-Rank Adaptation](https://arxiv.org/abs/2106.09685)
+- [ ] [Textual Inversion](https://textual-inversion.github.io/)
+- [ ] [DreamBooth](https://dreambooth.github.io/)
 
 ## Table of Contents
 * Overview

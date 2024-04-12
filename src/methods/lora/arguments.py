@@ -432,6 +432,7 @@ def parse_inference_args(input_args=None):
         ),
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
+    parser.add_argument("--comparison", action="store_true", help="Whether to compare images with and without LoRA.")
 
     if input_args is not None:
         args = parser.parse_args(input_args)

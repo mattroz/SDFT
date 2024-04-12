@@ -306,8 +306,8 @@ def main(args):
         train_data_dir=args.train_data_dir,
         caption_column=args.caption_column,
         resolution=args.resolution,
-        use_center_crop=args.center_crop,
-        use_random_flip=args.random_flip,
+        use_center_crop=args.use_center_crop,
+        use_random_flip=args.use_random_flip,
         max_train_samples=args.max_train_samples,
         seed=args.seed,
         debug=args.debug_loss,
@@ -678,7 +678,6 @@ def main(args):
                 else:    
                     raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
 
-                
     accelerator.end_training()
 
 

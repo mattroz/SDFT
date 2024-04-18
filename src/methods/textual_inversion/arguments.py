@@ -191,6 +191,13 @@ def parse_train_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--snr_gamma",
+        type=float,
+        default=None,
+        help="SNR weighting gamma to be used if rebalancing the loss. Recommended value is 5.0. "
+        "More details here: https://arxiv.org/abs/2303.09556.",
+    )
+    parser.add_argument(
         "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
     )
     parser.add_argument(
@@ -225,6 +232,12 @@ def parse_train_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--prediction_type",
+        type=str,
+        default=None,
+        help="The prediction_type that shall be used for training. Choose between 'epsilon' or 'v_prediction' or leave `None`. If left to `None` the default prediction type of the scheduler: `noise_scheduler.config.prediction_type` is chosen.",
+    )
+    parser.add_argument(
         "--mixed_precision",
         type=str,
         default="no",
@@ -235,6 +248,12 @@ def parse_train_args(input_args=None):
             "and an Nvidia Ampere GPU."
         ),
     )
+    parser.add_argument(
+        "--debug_loss",
+        action="store_true",
+        help="debug loss for each image, if filenames are available in the dataset",
+    )
+    parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
     parser.add_argument(
         "--allow_tf32",
         action="store_true",

@@ -192,7 +192,39 @@ def main(args):
             with open(path_to_save_config, "w") as f:
                 json.dump(config, f, indent=4)
 
-    # TODO INJECT PLACEHOLDER TOKEN WITH ADDITIONAL VECTORS HERE
+    # CONCEPT TOKENS INJECTION
+    num_vectors = min(1, args.num_vectors)
+    placeholder_tokens_str = [args.placegolder_token]
+    for i in range(1, num_vectors):
+        placeholder_tokens_str.append(f"{args.placeholder_token}_{i}")
+
+    num_tokens_added = tokenizer_one.add_tokens(placeholder_tokens_str)
+    if num_tokens_added != args.num_vectors:
+        raise ValueError(
+            f"The tokenizer already contains the token {args.placeholder_token}. Please pass a different"
+            " `placeholder_token` that is not already in the tokenizer."
+        )
+
+    # Now get initializer_token id
+    token_ids = tokenizer_one.encode(args.initializer_token, add_special_tokens=False)
+    if len(token_ids) > 1:
+        raise ValueError("The initializer token must be a single token.")
+
+    initializer_token_id = token_ids[0]
+    placeholder_token_ids = tokenizer_one.convert_tokens_to_ids(placeholder_tokens_str)
+    
+    # As we added new tokens - resize Embedding layer
+    text_encoder_one.resize_token_embeddings(len(tokenizer_one))
+
+    # Substitute placeholder tokens with the initializer token
+    with torch.no_grad:
+        initializer_token_embedding = text_encoder_one.text_model.embeddings.token_embedding[initializer_token_id]
+        for token_id in placeholder_token_ids:
+            text_encoder_one.text_model.embeddings.token_embedding[token_id] = \
+                initializer_token_embedding.clone()
+    
+    # CONCEPT TOKENS INJECTION END
+
 
     # We only train the token embeddings from text_encoder_one
     text_encoder_one.requires_grad_(False)

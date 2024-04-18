@@ -193,13 +193,13 @@ def main(args):
                 json.dump(config, f, indent=4)
 
     # CONCEPT TOKENS INJECTION
-    num_vectors = min(1, args.num_vectors)
-    placeholder_tokens_str = [args.placegolder_token]
+    num_vectors = max(1, args.num_vectors)
+    placeholder_tokens_str = [args.placeholder_token]
     for i in range(1, num_vectors):
         placeholder_tokens_str.append(f"{args.placeholder_token}_{i}")
 
     num_tokens_added = tokenizer_one.add_tokens(placeholder_tokens_str)
-    if num_tokens_added != args.num_vectors:
+    if num_tokens_added != num_vectors:
         raise ValueError(
             f"The tokenizer already contains the token {args.placeholder_token}. Please pass a different"
             " `placeholder_token` that is not already in the tokenizer."
@@ -212,19 +212,17 @@ def main(args):
 
     initializer_token_id = token_ids[0]
     placeholder_token_ids = tokenizer_one.convert_tokens_to_ids(placeholder_tokens_str)
-    
+
     # As we added new tokens - resize Embedding layer
     text_encoder_one.resize_token_embeddings(len(tokenizer_one))
 
     # Substitute placeholder tokens with the initializer token
-    with torch.no_grad:
-        initializer_token_embedding = text_encoder_one.text_model.embeddings.token_embedding[initializer_token_id]
+    with torch.no_grad():
+        token_embeddings = text_encoder_one.text_model.embeddings.token_embedding.weight.data
         for token_id in placeholder_token_ids:
-            text_encoder_one.text_model.embeddings.token_embedding[token_id] = \
-                initializer_token_embedding.clone()
+            token_embeddings[token_id] = token_embeddings[initializer_token_id].clone()
     
     # CONCEPT TOKENS INJECTION END
-
 
     # We only train the token embeddings from text_encoder_one
     text_encoder_one.requires_grad_(False)
@@ -286,12 +284,13 @@ def main(args):
         eps=args.adam_epsilon,
     )
 
+    placeholder_token = " ".join(tokenizer_one.convert_ids_to_tokens(placeholder_token_ids))
     train_dataset = TextualInversionDataset(
         data_root=args.train_data_dir,
         tokenizer_one=tokenizer_one,
         tokenizer_two=tokenizer_two,
         resolution=args.resolution,
-        placeholder_token=args.placeholder_token,
+        placeholder_token=placeholder_token,
         repeats=args.repeats,
         learnable_property=args.learnable_property,
         use_center_crop=args.use_center_crop,
@@ -379,6 +378,10 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
+    # Retrieve token embeddings from text_encoder_one to make sure  we dont update them later
+    # (we only want to update the embeddings that hold the concept of <placeholder_token> and additional vectors)
+    original_token_embeddings = unwrap_model_(text_encoder_one).text_model.embeddings.token_embedding.weight.data.clone()
+
     for epoch in range(first_epoch, args.num_train_epochs):
         text_encoder_one.train()
         
@@ -440,6 +443,10 @@ def main(args):
                     prompt=None,
                     text_input_ids_list=[batch["input_ids_one"], batch["input_ids_two"]],
                 )
+
+                prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
+                pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=weight_dtype)
+
                 unet_added_conditions = {"time_ids": add_time_ids, 
                                          "text_embeds": pooled_prompt_embeds}
                 
@@ -460,6 +467,7 @@ def main(args):
                 if noise_scheduler.config.prediction_type == "epsilon":
                     target = noise
                 elif noise_scheduler.config.prediction_type == "v_prediction":
+                    # https://arxiv.org/abs/2202.00512
                     target = noise_scheduler.get_velocity(model_input, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
@@ -494,7 +502,8 @@ def main(args):
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(text_encoder_one.text_model.embeddings.token_embedding.parameters(), args.max_grad_norm)
+                    params = unwrap_model_(text_encoder_one).text_model.embeddings.token_embedding.parameters()
+                    accelerator.clip_grad_norm_(params, args.max_grad_norm)
                 
                 optimizer.step()
                 lr_scheduler.step()
@@ -502,6 +511,12 @@ def main(args):
 
                 # TODO ensure we do not update token embeddings of text_encoder_one,
                 # only the ones which hold the concept of <placeholder_token> and additional vectors
+                with torch.no_grad():
+                    indices_without_update = torch.ones(len(tokenizer_one), dtype=torch.bool)
+                    indices_without_update[placeholder_token_ids] = False
+                    text_encoder_unwrapped = unwrap_model_(text_encoder_one)
+                    text_encoder_unwrapped.text_model.embeddings.token_embedding.weight.data[indices_without_update] = \
+                        original_token_embeddings[indices_without_update]
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -542,7 +557,7 @@ def main(args):
 
         if accelerator.is_main_process:
             # TODO wrap validation in a function
-            if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
+            if args.validation_prompt is not None and global_step % args.validation_steps == 0:
                 logger.info(
                     f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
                     f" {args.validation_prompt}."

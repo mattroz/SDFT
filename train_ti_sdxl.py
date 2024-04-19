@@ -21,6 +21,7 @@ from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig, CLIPTextModel, CLIPTextModelWithProjection
 
+import safetensors
 import diffusers
 from diffusers import (
     AutoencoderKL,
@@ -44,6 +45,21 @@ def get_checkpoints_directories(output_dir):
     dirs = [d for d in dirs if str(d).startswith("checkpoint")]
     dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
     return dirs
+
+
+def save_embeddings(text_encoder, placeholder_token_ids, args, save_path, safe_serialization=True):
+    logger.info("Saving embeddings")
+    embeddings = (
+        text_encoder
+        .text_model.embeddings.token_embedding
+        .weight[placeholder_token_ids]
+    )
+    embeddings_dict = {args.placeholder_token: embeddings.detach().cpu()}
+
+    if safe_serialization:
+        safetensors.torch.save_file(embeddings_dict, save_path, metadata={"format": "pt"})
+    else:
+        torch.save(embeddings_dict, save_path)
 
 
 # Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
@@ -344,6 +360,7 @@ def main(args):
     
     global_step = 0
     first_epoch = 0
+    initial_global_step = 0
 
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
@@ -367,9 +384,7 @@ def main(args):
 
             initial_global_step = global_step
             first_epoch = global_step // num_update_steps_per_epoch
-    else:
-        initial_global_step = 0
-
+        
     progress_bar = tqdm(
         range(0, args.max_train_steps),
         initial=initial_global_step,
@@ -381,6 +396,8 @@ def main(args):
     # Retrieve token embeddings from text_encoder_one to make sure  we dont update them later
     # (we only want to update the embeddings that hold the concept of <placeholder_token> and additional vectors)
     original_token_embeddings = unwrap_model_(text_encoder_one).text_model.embeddings.token_embedding.weight.data.clone()
+    indices_without_update = torch.ones(len(tokenizer_one), dtype=torch.bool)
+    indices_without_update[placeholder_token_ids] = False
 
     for epoch in range(first_epoch, args.num_train_epochs):
         text_encoder_one.train()
@@ -501,10 +518,17 @@ def main(args):
 
                 # Backpropagate
                 accelerator.backward(loss)
-                if accelerator.sync_gradients:
-                    params = unwrap_model_(text_encoder_one).text_model.embeddings.token_embedding.parameters()
-                    accelerator.clip_grad_norm_(params, args.max_grad_norm)
+                                
+                # Attempt to zero out unwanted gradients to avoid copying, but for some reason after optimizer.step() 
+                # weights still change a bit, although gradients in the optim itself are zeroes (except for placeholder tokens, ofc).         
                 
+                # if accelerator.sync_gradients:
+                    #with torch.no_grad():   
+                        # weights = unwrap_model_(text_encoder_one).text_model.embeddings.token_embedding.weight
+                        # accelerator.print(f"before: {weights.grad}")
+                        # weights.grad[indices_without_update, :].zero_()
+                        # accelerator.print(f"after: {weights.grad}\n====")
+            
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -524,7 +548,7 @@ def main(args):
                 global_step += 1
                 accelerator.log({"train_loss": train_loss}, step=global_step)
                 train_loss = 0.0
-
+                
                 if accelerator.is_main_process:
                     if global_step % args.checkpointing_steps == 0:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
@@ -534,7 +558,7 @@ def main(args):
                             # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
                             if len(checkpoint_dirs) >= args.checkpoints_total_limit:
                                 num_to_remove = len(checkpoint_dirs) - args.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoint_dirs[0:num_to_remove]
+                                removing_checkpoints = checkpoint_dirs[:num_to_remove]
 
                                 logger.info(
                                     f"{len(checkpoint_dirs)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
@@ -549,62 +573,55 @@ def main(args):
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
+                    if args.validation_prompt and global_step % args.validation_steps == 0:
+                        validate(
+                            args, 
+                            accelerator, 
+                            unet, 
+                            vae, 
+                            unwrap_model_(text_encoder_one), 
+                            text_encoder_two, 
+                            epoch, 
+                            weight_dtype)         
+
+                if global_step % args.embeddings_save_steps == 0:
+                    weight_name = f"ti-embeddings-step-{global_step}.safetensors"
+                    save_path = pathlib.Path(args.output_dir, weight_name)
+                    save_embeddings(
+                        unwrap_model_(text_encoder_one),
+                        placeholder_token_ids,
+                        args,
+                        save_path,
+                        safe_serialization=True,
+                    )
+
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
 
             if global_step >= args.max_train_steps:
-                break
-
-        if accelerator.is_main_process:
-            # TODO wrap validation in a function
-            if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                logger.info(
-                    f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
-                    f" {args.validation_prompt}."
-                )
-                # create pipeline
-                pipeline = StableDiffusionXLPipeline.from_pretrained(
-                    args.pretrained_model_name_or_path,
-                    scheduler=noise_scheduler,
-                    vae=vae,
-                    text_encoder=unwrap_model_(text_encoder_one),
-                    text_encoder_2=unwrap_model_(text_encoder_two),
-                    unet=unwrap_model_(unet),
-                    revision=args.revision,
-                    variant=args.variant,
-                    torch_dtype=weight_dtype,
-                )
-
-                pipeline = pipeline.to(accelerator.device)
-                pipeline.set_progress_bar_config(disable=True)
-
-                # run inference
-                generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
-                pipeline_args = {"prompt": args.validation_prompt}
-
-                with torch.cuda.amp.autocast():
-                    images = [
-                        pipeline(**pipeline_args, generator=generator).images[0]
-                        for _ in range(args.num_validation_images)
-                    ]
-                
-                for tracker in accelerator.trackers:
-                    if tracker.name == "tensorboard":
-                        np_images = np.stack([np.asarray(img) for img in images])
-                        tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-                    elif tracker.name == "file_system_tracker" and args.save_images_on_disk:
-                        tracker.save_images(images, epoch, bgr2rgb=True)
-                    else:    
-                        raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
-
-                del pipeline
-                torch.cuda.empty_cache()
+                break        
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        pass
-        # TODO save final weights and perform the last validation
-
+        validate(
+            args, 
+            accelerator, 
+            unet, 
+            vae, 
+            unwrap_model_(text_encoder_one), 
+            text_encoder_two, 
+            epoch, 
+            weight_dtype)
+        
+        save_path = pathlib.Path(args.output_dir, "ti-embeddings-final.safetensors")
+        save_embeddings(
+            unwrap_model_(text_encoder_one),
+            placeholder_token_ids,
+            args,
+            save_path,
+            safe_serialization=True,
+        )
+        
     accelerator.end_training()
 
 
@@ -616,3 +633,47 @@ if __name__ == "__main__":
     logger = get_logger(__name__, log_level="INFO", path_to_log_file=path_to_log_file)
 
     main(args)
+
+
+def validate(args, accelerator, unet, vae, text_encoder_one, text_encoder_two,  epoch, weight_dtype):
+    logger.info(
+        f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
+        f" {args.validation_prompt}."
+    )
+    # create pipeline
+    pipeline = StableDiffusionXLPipeline.from_pretrained(
+        args.pretrained_model_name_or_path,
+        vae=vae,
+        text_encoder=text_encoder_one,
+        text_encoder_2=text_encoder_two,
+        unet=unet,
+        revision=args.revision,
+        variant=args.variant,
+        torch_dtype=weight_dtype,
+    )
+
+    pipeline = pipeline.to(accelerator.device)
+    pipeline.set_progress_bar_config(disable=True)
+
+    # run inference
+    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
+    pipeline_args = {"prompt": args.validation_prompt}
+
+    with torch.cuda.amp.autocast():
+        images = [
+            pipeline(**pipeline_args, generator=generator).images[0]
+            for _ in range(args.num_validation_images)
+        ]
+    
+    for tracker in accelerator.trackers:
+        if tracker.name == "tensorboard":
+            np_images = np.stack([np.asarray(img) for img in images])
+            tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
+        elif tracker.name == "file_system_tracker":
+            if args.save_images_on_disk:
+                tracker.save_images(images, epoch, bgr2rgb=True)
+        else:    
+            raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
+
+    del pipeline
+    torch.cuda.empty_cache()

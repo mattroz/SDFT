@@ -62,6 +62,52 @@ def save_embeddings(text_encoder, placeholder_token_ids, args, save_path, safe_s
         torch.save(embeddings_dict, save_path)
 
 
+def validate(args, accelerator, unet, vae, text_encoder_one, text_encoder_two, tokenizer_one, tokenizer_two, epoch, weight_dtype):
+    logger.info(
+        f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
+        f" {args.validation_prompt}."
+    )
+    # create pipeline
+    pipeline = StableDiffusionXLPipeline.from_pretrained(
+        args.pretrained_model_name_or_path,
+        vae=vae,
+        text_encoder=text_encoder_one,
+        text_encoder_2=text_encoder_two,
+        tokenizer=tokenizer_one,
+        tokenizer_2=tokenizer_two,
+        unet=unet,
+        revision=args.revision,
+        variant=args.variant,
+        torch_dtype=weight_dtype,
+    )
+
+    pipeline = pipeline.to(accelerator.device)
+    pipeline.set_progress_bar_config(disable=True)
+
+    # run inference
+    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
+    pipeline_args = {"prompt": args.validation_prompt}
+
+    with torch.cuda.amp.autocast():
+        images = [
+            pipeline(**pipeline_args, generator=generator).images[0]
+            for _ in range(args.num_validation_images)
+        ]
+    
+    for tracker in accelerator.trackers:
+        if tracker.name == "tensorboard":
+            np_images = np.stack([np.asarray(img) for img in images])
+            tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
+        elif tracker.name == "file_system_tracker":
+            if args.save_images_on_disk:
+                tracker.save_images(images, epoch, bgr2rgb=True)
+        else:    
+            raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
+
+    del pipeline
+    torch.cuda.empty_cache()
+
+
 # Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
 def encode_prompt(text_encoders, tokenizers, prompt, text_input_ids_list=None):
     prompt_embeds_list = []
@@ -329,6 +375,7 @@ def main(args):
         optimizer=optimizer,
         num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
         num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
+        step_rules="1:1000,0.1:2000,0.01"
     )
 
     text_encoder_one, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
@@ -581,6 +628,8 @@ def main(args):
                             vae, 
                             unwrap_model_(text_encoder_one), 
                             text_encoder_two, 
+                            tokenizer_one,
+                            tokenizer_two,
                             epoch, 
                             weight_dtype)         
 
@@ -610,6 +659,8 @@ def main(args):
             vae, 
             unwrap_model_(text_encoder_one), 
             text_encoder_two, 
+            tokenizer_one,
+            tokenizer_two,
             epoch, 
             weight_dtype)
         
@@ -633,47 +684,3 @@ if __name__ == "__main__":
     logger = get_logger(__name__, log_level="INFO", path_to_log_file=path_to_log_file)
 
     main(args)
-
-
-def validate(args, accelerator, unet, vae, text_encoder_one, text_encoder_two,  epoch, weight_dtype):
-    logger.info(
-        f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
-        f" {args.validation_prompt}."
-    )
-    # create pipeline
-    pipeline = StableDiffusionXLPipeline.from_pretrained(
-        args.pretrained_model_name_or_path,
-        vae=vae,
-        text_encoder=text_encoder_one,
-        text_encoder_2=text_encoder_two,
-        unet=unet,
-        revision=args.revision,
-        variant=args.variant,
-        torch_dtype=weight_dtype,
-    )
-
-    pipeline = pipeline.to(accelerator.device)
-    pipeline.set_progress_bar_config(disable=True)
-
-    # run inference
-    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
-    pipeline_args = {"prompt": args.validation_prompt}
-
-    with torch.cuda.amp.autocast():
-        images = [
-            pipeline(**pipeline_args, generator=generator).images[0]
-            for _ in range(args.num_validation_images)
-        ]
-    
-    for tracker in accelerator.trackers:
-        if tracker.name == "tensorboard":
-            np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-        elif tracker.name == "file_system_tracker":
-            if args.save_images_on_disk:
-                tracker.save_images(images, epoch, bgr2rgb=True)
-        else:    
-            raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
-
-    del pipeline
-    torch.cuda.empty_cache()

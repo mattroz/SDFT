@@ -100,7 +100,7 @@ def validate(args, accelerator, unet, vae, text_encoder_one, text_encoder_two, t
             tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
         elif tracker.name == "file_system_tracker":
             if args.save_images_on_disk:
-                tracker.save_images(images, epoch, bgr2rgb=True)
+                tracker.save_images(images, epoch)
         else:    
             raise NotImplementedError("Only tensorboard and file_system_tracker are supported for validation logging.")
 

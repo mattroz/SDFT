@@ -51,11 +51,9 @@ class FileSystemTracker(GeneralTracker):
             f.write("\n")
 
     @on_main_process
-    def save_images(self, images: list[np.ndarray], epoch: int, bgr2rgb: bool = False):
+    def save_images(self, images: list[np.ndarray], epoch: int):
         path_to_save_epoch_images = pathlib.Path(self.path_to_save_images, f"epoch_{epoch}")
         path_to_save_epoch_images.mkdir(exist_ok=True, parents=True)
 
         for i, image in enumerate(images):
-            if bgr2rgb:
-                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(str(pathlib.Path(path_to_save_epoch_images, f"{epoch}_{i}.png")), np.asarray(image))
+            image.save(str(pathlib.Path(path_to_save_epoch_images, f"{epoch}_{i}.png")))

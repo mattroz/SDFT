@@ -47,19 +47,76 @@ def get_checkpoints_directories(output_dir):
     return dirs
 
 
-def save_embeddings(text_encoder, placeholder_token_ids, args, save_path, safe_serialization=True):
+def save_embeddings(text_encoder_one, text_encoder_two, placeholder_token_ids_one, placeholder_token_ids_two, save_path, safe_serialization=True):
     logger.info("Saving embeddings")
-    embeddings = (
-        text_encoder
+    
+    embeddings_one = (
+        text_encoder_one
         .text_model.embeddings.token_embedding
-        .weight[placeholder_token_ids]
+        .weight[placeholder_token_ids_one]
     )
-    embeddings_dict = {args.placeholder_token: embeddings.detach().cpu()}
+    embeddings_two = (
+        text_encoder_two
+        .text_model.embeddings.token_embedding
+        .weight[placeholder_token_ids_two]
+    )
+
+    embeddings_dict = {
+        type(text_encoder_one).__name__: embeddings_one.detach().cpu(),
+        type(text_encoder_two).__name__: embeddings_two.detach().cpu(),
+    }
 
     if safe_serialization:
         safetensors.torch.save_file(embeddings_dict, save_path, metadata={"format": "pt"})
     else:
         torch.save(embeddings_dict, save_path)
+
+
+def get_token_embeddings(text_encoder):
+    token_embeddings = text_encoder.text_model.embeddings.token_embedding.weight.data.clone()
+    return token_embeddings
+
+
+def update_placeholder_tokens_only(text_encoder, tokenizer, placeholder_token_ids, original_token_embeddings):
+    indices_without_update = torch.ones(len(tokenizer), dtype=torch.bool)
+    indices_without_update[placeholder_token_ids] = False
+    text_encoder.text_model.embeddings.token_embedding.weight.data[indices_without_update] = \
+        original_token_embeddings[indices_without_update]
+
+
+def inject_placeholder_tokens(tokenizer, text_encoder, placeholder_token, initializer_token, num_vectors):
+    placeholder_tokens_str = [placeholder_token]
+
+    for i in range(1, num_vectors):
+        placeholder_tokens_str.append(f"{placeholder_token}_{i}")
+
+    num_tokens_added = tokenizer.add_tokens(placeholder_tokens_str)
+    logger.info(f"Added {num_tokens_added} tokens to the tokenizer.")
+    if num_tokens_added != num_vectors:
+        raise ValueError(
+            f"The tokenizer already contains the token {placeholder_token}. Please pass a different"
+            " `placeholder_token` that is not already in the tokenizer."
+        )
+
+    # Now get initializer_token id
+    token_ids = tokenizer.encode(initializer_token, add_special_tokens=False)
+    if len(token_ids) > 1:
+        raise ValueError("The initializer token must be a single token.")
+
+    initializer_token_id = token_ids[0]
+    placeholder_token_ids = tokenizer.convert_tokens_to_ids(placeholder_tokens_str)
+
+    # As we added new tokens - resize Embedding layer
+    text_encoder.resize_token_embeddings(len(tokenizer))
+    resized_token_embeddings = text_encoder.text_model.embeddings.token_embedding.weight.data
+    logger.info(f"Resized token embeddings shape of {type(text_encoder).__name__}: {resized_token_embeddings.shape}.")
+
+    # Substitute placeholder tokens with the initializer token
+    with torch.no_grad():
+        for token_id in placeholder_token_ids:
+            resized_token_embeddings[token_id] = resized_token_embeddings[initializer_token_id].clone()
+
+    return placeholder_token_ids
 
 
 def validate(args, accelerator, unet, vae, text_encoder_one, text_encoder_two, tokenizer_one, tokenizer_two, epoch, weight_dtype):
@@ -167,6 +224,14 @@ def main(args):
         if args.output_dir is not None:
             pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
+    # Save placeholder token name to logging dir
+    filesystem_tracker.log_to_file(
+        {
+            "placeholder_token": args.placeholder_token, 
+            "initializer_token": args.initializer_token
+        }, 
+        "textual_inversion_params.json")
+
     unwrap_model_ = partial(unwrap_model, accelerator)
 
     logger.info(accelerator.state, main_process_only=False)
@@ -255,43 +320,25 @@ def main(args):
                 json.dump(config, f, indent=4)
 
     # CONCEPT TOKENS INJECTION
-    num_vectors = max(1, args.num_vectors)
-    placeholder_tokens_str = [args.placeholder_token]
-    for i in range(1, num_vectors):
-        placeholder_tokens_str.append(f"{args.placeholder_token}_{i}")
-
-    num_tokens_added = tokenizer_one.add_tokens(placeholder_tokens_str)
-    if num_tokens_added != num_vectors:
-        raise ValueError(
-            f"The tokenizer already contains the token {args.placeholder_token}. Please pass a different"
-            " `placeholder_token` that is not already in the tokenizer."
-        )
-
-    # Now get initializer_token id
-    token_ids = tokenizer_one.encode(args.initializer_token, add_special_tokens=False)
-    if len(token_ids) > 1:
-        raise ValueError("The initializer token must be a single token.")
-
-    initializer_token_id = token_ids[0]
-    placeholder_token_ids = tokenizer_one.convert_tokens_to_ids(placeholder_tokens_str)
-
-    # As we added new tokens - resize Embedding layer
-    text_encoder_one.resize_token_embeddings(len(tokenizer_one))
-
-    # Substitute placeholder tokens with the initializer token
-    with torch.no_grad():
-        token_embeddings = text_encoder_one.text_model.embeddings.token_embedding.weight.data
-        for token_id in placeholder_token_ids:
-            token_embeddings[token_id] = token_embeddings[initializer_token_id].clone()
-    
+    placeholder_token_ids_one = inject_placeholder_tokens(tokenizer_one, 
+                                                          text_encoder_one, 
+                                                          args.placeholder_token, 
+                                                          args.initializer_token, 
+                                                          args.num_vectors)
+    placeholder_token_ids_two = inject_placeholder_tokens(tokenizer_two, 
+                                                          text_encoder_two, 
+                                                          args.placeholder_token, 
+                                                          args.initializer_token, 
+                                                          args.num_vectors)
     # CONCEPT TOKENS INJECTION END
 
-    # We only train the token embeddings from text_encoder_one
+    # We only train the token embeddings from text_encoder_one and text_encoder_two
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
     vae.requires_grad_(False)
     unet.requires_grad_(False)
     text_encoder_one.text_model.embeddings.token_embedding.requires_grad_(True)
+    text_encoder_two.text_model.embeddings.token_embedding.requires_grad_(True)
 
     # Move unet, vae and text_encoders to device and cast to weight_dtype
     # The VAE is in float32 to avoid NaN losses.
@@ -306,9 +353,11 @@ def main(args):
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
 
     logger.info(f"{type(text_encoder_one).__name__} TI: {get_trainable_parameters_str(text_encoder_one)}", main_process_only=True)
+    logger.info(f"{type(text_encoder_two).__name__} TI: {get_trainable_parameters_str(text_encoder_two)}", main_process_only=True)
 
     if args.gradient_checkpointing:
         text_encoder_one.gradient_checkpointing_enable()
+        text_encoder_two.gradient_checkpointing_enable()
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -322,7 +371,7 @@ def main(args):
 
     # Make sure the trainable params are in float32.
     if args.mixed_precision == "fp16":
-        cast_training_params(text_encoder_one, dtype=torch.float32)
+        cast_training_params([text_encoder_one, text_encoder_two], dtype=torch.float32)
 
     # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
     if args.use_8bit_adam:
@@ -337,22 +386,29 @@ def main(args):
     else:
         optimizer_class = torch.optim.AdamW
 
-
+    params_to_optimizer = (
+        list(text_encoder_one.text_model.embeddings.token_embedding.parameters()) + 
+        list(text_encoder_two.text_model.embeddings.token_embedding.parameters())
+    )
     optimizer = optimizer_class(
-        text_encoder_one.text_model.embeddings.token_embedding.parameters(),
+        params_to_optimizer,
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
 
-    placeholder_token = " ".join(tokenizer_one.convert_ids_to_tokens(placeholder_token_ids))
+    placeholder_token_one = " ".join(tokenizer_one.convert_ids_to_tokens(placeholder_token_ids_one))
+    placeholder_token_two = " ".join(tokenizer_two.convert_ids_to_tokens(placeholder_token_ids_two))
+    assert placeholder_token_one == placeholder_token_two, \
+        f"Decoded placeholder tokens both tokenizers must be equal: {placeholder_token_one} != {placeholder_token_two}"
+
     train_dataset = TextualInversionDataset(
         data_root=args.train_data_dir,
         tokenizer_one=tokenizer_one,
         tokenizer_two=tokenizer_two,
         resolution=args.resolution,
-        placeholder_token=placeholder_token,
+        placeholder_token=placeholder_token_one,
         repeats=args.repeats,
         learnable_property=args.learnable_property,
         use_center_crop=args.use_center_crop,
@@ -378,8 +434,8 @@ def main(args):
         step_rules="1:1000,0.1:2000,0.01"
     )
 
-    text_encoder_one, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        text_encoder_one, optimizer, train_dataloader, lr_scheduler
+    text_encoder_one, text_encoder_two, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        text_encoder_one, text_encoder_two, optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -442,12 +498,12 @@ def main(args):
 
     # Retrieve token embeddings from text_encoder_one to make sure  we dont update them later
     # (we only want to update the embeddings that hold the concept of <placeholder_token> and additional vectors)
-    original_token_embeddings = unwrap_model_(text_encoder_one).text_model.embeddings.token_embedding.weight.data.clone()
-    indices_without_update = torch.ones(len(tokenizer_one), dtype=torch.bool)
-    indices_without_update[placeholder_token_ids] = False
+    original_token_embeddings_one = get_token_embeddings(unwrap_model_(text_encoder_one))
+    original_token_embeddings_two = get_token_embeddings(unwrap_model_(text_encoder_two))
 
     for epoch in range(first_epoch, args.num_train_epochs):
         text_encoder_one.train()
+        text_encoder_two.train()
         
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
@@ -580,15 +636,18 @@ def main(args):
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
-                # TODO ensure we do not update token embeddings of text_encoder_one,
+                # TODO ensure we do not update token embeddings of text_encoders,
                 # only the ones which hold the concept of <placeholder_token> and additional vectors
                 with torch.no_grad():
-                    indices_without_update = torch.ones(len(tokenizer_one), dtype=torch.bool)
-                    indices_without_update[placeholder_token_ids] = False
-                    text_encoder_unwrapped = unwrap_model_(text_encoder_one)
-                    text_encoder_unwrapped.text_model.embeddings.token_embedding.weight.data[indices_without_update] = \
-                        original_token_embeddings[indices_without_update]
-
+                    update_placeholder_tokens_only(unwrap_model_(text_encoder_one), 
+                                                   tokenizer_one, 
+                                                   placeholder_token_ids_one, 
+                                                   original_token_embeddings_one)
+                    update_placeholder_tokens_only(unwrap_model_(text_encoder_two), 
+                                                   tokenizer_two, 
+                                                   placeholder_token_ids_two, 
+                                                   original_token_embeddings_two)
+                    
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
@@ -627,7 +686,7 @@ def main(args):
                             unet, 
                             vae, 
                             unwrap_model_(text_encoder_one), 
-                            text_encoder_two, 
+                            unwrap_model_(text_encoder_two), 
                             tokenizer_one,
                             tokenizer_two,
                             epoch, 
@@ -638,8 +697,9 @@ def main(args):
                     save_path = pathlib.Path(args.output_dir, weight_name)
                     save_embeddings(
                         unwrap_model_(text_encoder_one),
-                        placeholder_token_ids,
-                        args,
+                        unwrap_model_(text_encoder_two),                        
+                        placeholder_token_ids_one,
+                        placeholder_token_ids_two,
                         save_path,
                         safe_serialization=True,
                     )
@@ -658,7 +718,7 @@ def main(args):
             unet, 
             vae, 
             unwrap_model_(text_encoder_one), 
-            text_encoder_two, 
+            unwrap_model_(text_encoder_two), 
             tokenizer_one,
             tokenizer_two,
             epoch, 
@@ -667,8 +727,9 @@ def main(args):
         save_path = pathlib.Path(args.output_dir, "ti-embeddings-final.safetensors")
         save_embeddings(
             unwrap_model_(text_encoder_one),
-            placeholder_token_ids,
-            args,
+            unwrap_model_(text_encoder_two),
+            placeholder_token_ids_one,
+            placeholder_token_ids_two,
             save_path,
             safe_serialization=True,
         )

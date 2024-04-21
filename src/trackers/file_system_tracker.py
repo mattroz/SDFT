@@ -43,6 +43,11 @@ class FileSystemTracker(GeneralTracker):
         log_entry["step"] = step
         self.run.append(log_entry)
         self._dump_to_file(log_entry)
+
+    @on_main_process
+    def log_to_file(self, payload, filename):
+        with open(pathlib.Path(self.logging_dir, filename), "w") as f:
+            json.dump(payload, f)
         
     @on_main_process
     def _dump_to_file(self, entry):

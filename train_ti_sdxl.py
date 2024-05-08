@@ -62,8 +62,8 @@ def save_embeddings(text_encoder_one, text_encoder_two, placeholder_token_ids_on
     )
 
     embeddings_dict = {
-        type(text_encoder_one).__name__: embeddings_one.detach().cpu(),
-        type(text_encoder_two).__name__: embeddings_two.detach().cpu(),
+        "text_encoder_one": embeddings_one.detach().cpu(),
+        "text_encoder_two": embeddings_two.detach().cpu(),
     }
 
     if safe_serialization:
@@ -143,7 +143,7 @@ def validate(args, accelerator, unet, vae, text_encoder_one, text_encoder_two, t
 
     # run inference
     generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
-    pipeline_args = {"prompt": args.validation_prompt}
+    pipeline_args = {"prompt": args.validation_prompt, "negative_prompt": "blurry, bad quality, distorted"}
 
     with torch.cuda.amp.autocast():
         images = [

@@ -310,3 +310,137 @@ def parse_train_args(input_args=None):
         raise ValueError("You must specify a train data directory.")
 
     return args
+
+
+def parse_inference_args(input_args=None):
+    parser = argparse.ArgumentParser(description="Textual inversion inference script.")
+    parser.add_argument(
+        "--pretrained_model_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--pretrained_vae_model_name_or_path",
+        type=str,
+        default=None,
+        help="Path to pretrained VAE model with better numerical stability. More details: https://github.com/huggingface/diffusers/pull/4038.",
+    )
+    parser.add_argument(
+        "--revision",
+        type=str,
+        default=None,
+        required=False,
+        help="Revision of pretrained model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default=None,
+        help="Variant of the model files of the pretrained model identifier from huggingface.co/models, 'e.g.' fp16",
+    )
+    parser.add_argument(
+        "--path_to_embeddings",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to trained embeddings.",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="The prompt to guide the image generation.",
+    )
+    parser.add_argument(
+        "--prompt_2",
+        type=str,
+        default=None,
+        help="The prompt to guide the image generation to be sent to `tokenizer_2` and `text_encoder_2`",
+    )
+    parser.add_argument(
+        "--negative_prompt",
+        type=str,
+        default=None,
+        help="The prompt not to guide the image generation.",
+    )
+    parser.add_argument(
+        "--negative_prompt_2",
+        type=str,
+        default=None,
+        help="The prompt not to guide the image generation to be sent to `tokenizer_2` and `text_encoder_2`.",
+    )
+    parser.add_argument(
+        "--num_inference_steps",
+        type=int,
+        default=35,
+        help=(
+            "The number of denoising steps. More denoising steps usually lead to"
+            " a higher quality image at the expense of slower inference.",
+        )
+    )
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=5.0,
+        help=(
+            "The guidance scale for the prompt during validation."
+            "Higher guidance scale encourages to generate images that are closely linked to the"
+            " text `prompt`, usually at the expense of lower image quality.",
+        )
+    )
+    parser.add_argument(
+        "--num_images_to_generate",
+        type=int,
+        default=4,
+        help="Number of images that should be generated with `prompt` and `negative_prompt`.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=pathlib.Path,
+        default="sdxl-model-finetuned-textual-inversion",
+        help="The output directory where the model predictions and checkpoints will be written.",
+    )
+    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=1024,
+        help=(
+            "The resolution for input images, all the images in the train/validation dataset will be resized to this"
+            " resolution"
+        ),
+    )
+    parser.add_argument(
+        "--logging_dir",
+        type=pathlib.Path,
+        default="logs",
+        help=(
+            "[TensorBoard](https://www.tensorflow.org/tensorboard) log directory. Will default to"
+            " *output_dir/runs/**CURRENT_DATETIME_HOSTNAME***."
+        ),
+    )   
+    parser.add_argument(
+        "--mixed_precision",
+        type=str,
+        default="no",
+        choices=["no", "fp16", "bf16"],
+        help=(
+            "Whether to use mixed precision. Choose"
+            "between fp16 and bf16 (bfloat16). Bf16 requires PyTorch >= 1.10."
+            "and an Nvidia Ampere GPU."
+        ),
+    )
+    parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
+
+    if input_args is not None:
+        args = parser.parse_args(input_args)
+    else:
+        args = parser.parse_args()
+
+    env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    if env_local_rank != -1 and env_local_rank != args.local_rank:
+        args.local_rank = env_local_rank
+
+    return args

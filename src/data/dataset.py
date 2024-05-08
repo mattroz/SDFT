@@ -219,7 +219,6 @@ imagenet_templates_small = [
     "a photo of a small {}",
 ]
 
-
 imagenet_style_templates_small = [
     "a painting in the style of {}",
     "a rendering in the style of {}",
@@ -346,8 +345,4 @@ class TextualInversionDataset(Dataset):
         image = self.train_transforms(image)
         example["pixel_values"] = image
         
-        # image = np.array(image).astype(np.uint8)
-        # image = (image / 127.5 - 1.0).astype(np.float32)
-
-        # example["pixel_values"] = torch.from_numpy(image).permute(2, 0, 1)
         return example

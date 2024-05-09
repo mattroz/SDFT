@@ -348,6 +348,13 @@ def parse_inference_args(input_args=None):
         help="Path to trained embeddings.",
     )
     parser.add_argument(
+        "--placeholder_token",
+        type=str,
+        default=None,
+        required=True,
+        help="A token to use as a placeholder for the concept.",
+    )
+    parser.add_argument(
         "--prompt",
         type=str,
         default=None,

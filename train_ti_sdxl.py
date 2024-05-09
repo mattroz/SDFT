@@ -52,7 +52,6 @@ def save_embeddings(text_encoder_one,
                     placeholder_token_ids_one, 
                     placeholder_token_ids_two, 
                     save_path, 
-                    placeholder_token,
                     safe_serialization=True):
     logger.info("Saving embeddings")
     
@@ -70,7 +69,6 @@ def save_embeddings(text_encoder_one,
     embeddings_dict = {
         "text_encoder_one": embeddings_one.detach().cpu(),
         "text_encoder_two": embeddings_two.detach().cpu(),
-        "placeholder_token": placeholder_token
     }
 
     if safe_serialization:
@@ -709,7 +707,6 @@ def main(args):
                         placeholder_token_ids_two,
                         save_path,
                         safe_serialization=True,
-                        placeholder_token=args.placeholder_token
                     )
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
@@ -740,7 +737,6 @@ def main(args):
             placeholder_token_ids_two,
             save_path,
             safe_serialization=True,
-            placeholder_token=args.placeholder_token
         )
         
     accelerator.end_training()

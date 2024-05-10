@@ -171,7 +171,7 @@ accelerate launch run_ti_inference.py \
 
 No TI - TI images comparison. Pairs of images were generated using the same latents.
 
-**NOTE**: since [training dataset](datasets/skull/) consists of 5 images only with [default captions](), results are not that inspiring, but introducing more fine-graided captions would make it much better.
+**NOTE**: since [training dataset](datasets/skull/) consists of 5 images only with [default captions](https://github.com/mattroz/SDFT/blob/intergrate-textual-inversion/src/data/dataset.py#L222), results are not that inspiring, but introducing more fine-graided captions would make it much better.
 
 > `"A <skull_lamp>, made of lego."`
 

@@ -102,12 +102,6 @@ def main(args):
                      args.resolution // pipeline.vae_scale_factor, 
                      args.resolution // pipeline.vae_scale_factor)
     latents = randn_tensor(latents_shape, generator, device=accelerator.device, dtype=weight_dtype)
-    
-    if args.comparison:
-        for _ in range(args.num_images_to_generate):
-            path_to_save_images_no_ti = pathlib.Path(path_to_save_images, "no_ti")
-            path_to_save_images_no_ti.mkdir(parents=True, exist_ok=True)
-            generate_and_save(args, accelerator, pipeline, latents, path_to_save_images_no_ti)
 
     # Load token embeddings for text encoder one and text encoder two
     pipeline.load_textual_inversion(

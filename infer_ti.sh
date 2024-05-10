@@ -1,7 +1,7 @@
 accelerate launch run_ti_inference.py \
   --pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0 \
   --pretrained_vae_model_name_or_path=madebyollin/sdxl-vae-fp16-fix \
-  --output_dir=runs/ti_run_style \
+  --output_dir=runs/ti_run\
   --path_to_embeddings=runs/ti_run/ti-embeddings-final.safetensors \
   --resolution=1024 \
   --num_images_to_generate=1 \

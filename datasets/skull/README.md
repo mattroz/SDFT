@@ -2,7 +2,7 @@
 
 This toy dataset contains 5 images for fine-tuning text-to-image model with textual inversion approach.
 
-This version of a dataset does not contain any captions as they're taken from a [dataset]() implementation according to the TI paper. 
+This version of a dataset does not contain any captions as they're taken from a [dataset](https://github.com/mattroz/SDFT/blob/intergrate-textual-inversion/src/data/dataset.py#L222) implementation according to the TI paper. 
 
 ## Dataset Details
 

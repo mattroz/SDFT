@@ -80,7 +80,7 @@ class ImageCaptionDataset(Dataset):
                  use_center_crop=True,
                  use_random_flip=True,
                  max_train_samples=None,
-                 interpolation="bicubic",
+                 interpolation=transforms.InterpolationMode.BILINEAR,
                  flip_p=0.5,
                  shuffle=True,
                  seed=42,
@@ -132,7 +132,7 @@ class ImageCaptionDataset(Dataset):
         if max_train_samples:
             self.dataset["train"] = self.dataset["train"].select(range(max_train_samples))
 
-        self.train_resize = transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR)
+        self.train_resize = transforms.Resize(resolution, interpolation=self.interpolation)
         self.train_crop = transforms.CenterCrop(resolution) if use_center_crop else transforms.RandomCrop(resolution)
         self.train_flip = transforms.RandomHorizontalFlip(p=flip_p)
         self.train_transforms = transforms.Compose(
@@ -176,4 +176,173 @@ class ImageCaptionDataset(Dataset):
         if self.debug and example[self.image_column].filename:
             example["filename"] = os.path.basename(example[self.image_column].filename)
 
+        return example
+    
+
+# TI DATASET
+PIL_INTERPOLATION = {
+    "linear": PIL.Image.Resampling.BILINEAR,
+    "bilinear": PIL.Image.Resampling.BILINEAR,
+    "bicubic": PIL.Image.Resampling.BICUBIC,
+    "lanczos": PIL.Image.Resampling.LANCZOS,
+    "nearest": PIL.Image.Resampling.NEAREST,
+}
+
+# Textual inversion paper, section D
+imagenet_templates_small = [
+    "a photo of a {}",
+    "a rendering of a {}",
+    "a cropped photo of the {}",
+    "the photo of a {}",
+    "a photo of a clean {}",
+    "a photo of a dirty {}",
+    "a dark photo of the {}",
+    "a photo of my {}",
+    "a photo of the cool {}",
+    "a close-up photo of a {}",
+    "a bright photo of the {}",
+    "a cropped photo of a {}",
+    "a photo of the {}",
+    "a good photo of the {}",
+    "a photo of one {}",
+    "a close-up photo of the {}",
+    "a rendition of the {}",
+    "a photo of the clean {}",
+    "a rendition of a {}",
+    "a photo of a nice {}",
+    "a good photo of a {}",
+    "a photo of the nice {}",
+    "a photo of the small {}",
+    "a photo of the weird {}",
+    "a photo of the large {}",
+    "a photo of a cool {}",
+    "a photo of a small {}",
+]
+
+imagenet_style_templates_small = [
+    "a painting in the style of {}",
+    "a rendering in the style of {}",
+    "a cropped painting in the style of {}",
+    "the painting in the style of {}",
+    "a clean painting in the style of {}",
+    "a dirty painting in the style of {}",
+    "a dark painting in the style of {}",
+    "a picture in the style of {}",
+    "a cool painting in the style of {}",
+    "a close-up painting in the style of {}",
+    "a bright painting in the style of {}",
+    "a cropped painting in the style of {}",
+    "a good painting in the style of {}",
+    "a close-up painting in the style of {}",
+    "a rendition in the style of {}",
+    "a nice painting in the style of {}",
+    "a small painting in the style of {}",
+    "a weird painting in the style of {}",
+    "a large painting in the style of {}",
+]
+
+
+class TextualInversionDataset(Dataset):
+    def __init__(
+        self,
+        data_root,
+        tokenizer_one,
+        tokenizer_two,
+        learnable_property="object",  # [object, style]
+        resolution=512,
+        repeats=100,
+        interpolation="bicubic",
+        flip_p=0.5,
+        set="train",
+        placeholder_token="*",
+        use_center_crop=True,
+        use_random_flip=True,
+    ):
+        self.data_root = data_root
+        self.tokenizer_one = tokenizer_one
+        self.tokenizer_two = tokenizer_two
+        self.learnable_property = learnable_property
+        self.resolution = resolution
+        self.placeholder_token = placeholder_token
+        self.use_center_crop = use_center_crop
+        self.use_random_flip = use_random_flip
+        self.flip_p = flip_p
+
+        self.image_paths = [str(pathlib.Path(file_path)) for file_path in pathlib.Path(self.data_root, "images").iterdir() if file_path.is_file()]
+
+        self.num_images = len(self.image_paths)
+        self._length = self.num_images
+
+        if set == "train":
+            self._length = self.num_images * repeats
+
+        self.interpolation = {
+            "linear": PIL_INTERPOLATION["linear"],
+            "bilinear": PIL_INTERPOLATION["bilinear"],
+            "bicubic": PIL_INTERPOLATION["bicubic"],
+            "lanczos": PIL_INTERPOLATION["lanczos"],
+        }[interpolation]
+
+        self.templates = imagenet_style_templates_small if learnable_property == "style" else imagenet_templates_small
+        self.flip_transform = transforms.RandomHorizontalFlip(p=self.flip_p)
+        self.crop = transforms.CenterCrop(resolution) if self.use_center_crop else transforms.RandomCrop(resolution)
+        self.train_transforms = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+
+    def __len__(self):
+        return self._length
+
+    def __getitem__(self, i):
+        example = {}
+        image = PIL.Image.open(self.image_paths[i % self.num_images])
+
+        if not image.mode == "RGB":
+            image = image.convert("RGB")
+
+        placeholder_string = self.placeholder_token
+        text = random.choice(self.templates).format(placeholder_string)
+
+        example["original_size"] = (image.height, image.width)
+
+        image = image.resize((self.resolution, self.resolution), resample=self.interpolation)
+        
+        if self.use_center_crop:
+            y1 = max(0, int(round((image.height - self.resolution) / 2.0)))
+            x1 = max(0, int(round((image.width - self.resolution) / 2.0)))
+            image = self.crop(image)
+        else:
+            y1, x1, h, w = self.crop.get_params(image, (self.resolution, self.resolution))
+            image = transforms.functional.crop(image, y1, x1, h, w)
+
+        example["crop_top_left"] = (y1, x1)
+
+        example["input_id_one"] = self.tokenizer_one(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=self.tokenizer_one.model_max_length,
+            return_tensors="pt",
+        ).input_ids[0]
+
+        example["input_id_two"] = self.tokenizer_two(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=self.tokenizer_two.model_max_length,
+            return_tensors="pt",
+        ).input_ids[0]
+
+        image = np.array(image).astype(np.uint8)
+        image = PIL.Image.fromarray(image)
+
+        if self.use_random_flip:
+            image = self.flip_transform(image)
+
+        image = self.train_transforms(image)
+        example["pixel_values"] = image
+        
         return example

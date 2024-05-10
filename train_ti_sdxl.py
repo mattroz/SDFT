@@ -335,7 +335,6 @@ def main(args):
                                                           args.placeholder_token, 
                                                           args.initializer_token, 
                                                           args.num_vectors)
-    # CONCEPT TOKENS INJECTION END
 
     # We only train the token embeddings from text_encoder_one and text_encoder_two
     text_encoder_one.requires_grad_(False)
@@ -633,15 +632,13 @@ def main(args):
                 # if accelerator.sync_gradients:
                     #with torch.no_grad():   
                         # weights = unwrap_model_(text_encoder_one).text_model.embeddings.token_embedding.weight
-                        # accelerator.print(f"before: {weights.grad}")
                         # weights.grad[indices_without_update, :].zero_()
-                        # accelerator.print(f"after: {weights.grad}\n====")
             
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
-                # TODO ensure we do not update token embeddings of text_encoders,
+                # Ensure we do not update token embeddings of text_encoders,
                 # only the ones which hold the concept of <placeholder_token> and additional vectors
                 with torch.no_grad():
                     update_placeholder_tokens_only(unwrap_model_(text_encoder_one), 
